@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Single Page App - JWT</title>
+</head>
+<body onload="onLoad();">
+	<form >
+    <div>
+        <label for="domain">Domain :</label>
+        <input type="text" id="domain" name="domain">
+    </div>
+    <div>
+        <label for="clientId">ClientId :</label>
+        <input type="text" id="clientId" name="client_id">
+    </div>
+    <div>
+        <label for="clientSecret">ClientSecret :</label>
+        <input type="text" id="clientSecret" name="client_secret">
+    </div>
+		<button onclick="authorize(document.getElementById('domain').value, document.getElementById('clientId').value, document.getElementById('clientSecret').value)">Call Authorize Endpoint</button>
+	</form>
+
+	<div id="jwt"></div>
+
+	<script>
+		function base64URLEncode(str) {
+			return btoa(str)
+				.replace(/\+/g, '-')
+				.replace(/\//g, '_')
+				.replace(/=/g, '');
+		}
+
+		function bufferToString(buffer) {
+			const CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+			const state = [];
+			for (let i = 0; i < buffer.byteLength; i += 1) {
+				const index = buffer[i] % CHARSET.length;
+				state.push(CHARSET[index]);
+			}
+			return state.join('');
+		}
+
+		function authorize(domain, clientId, clientSecret) {
+			// génération du code_verifier
+			const array = new Uint8Array(32);
+			window.crypto.getRandomValues(array);
+			const codeVerifier = base64URLEncode(bufferToString(array));
+			
+			// sauvegarde des éléments code_verifier, client credentials afin de permettre la demande de token
+			// dans une vrai application, les informations telle que le clietnSecret ne devraient pas être stockée
+			// dans le browser, mais cote server (NodeJS ou WebApp Java)
+			// cette application d'exemple ne fait qu'illustrer le flow d'authentification
+			sessionStorage.setItem('code_verifier', codeVerifier);
+			sessionStorage.setItem('client_id', clientId);
+			sessionStorage.setItem('client_secret', clientSecret);
+			sessionStorage.setItem('domain', domain);
+
+			// génération du code_challenge
+			const encoder = new TextEncoder();
+			const data = encoder.encode(codeVerifier);
+			window.crypto.subtle.digest('SHA-256', data)
+				.then(buffer => {
+						const bufferToString = String.fromCharCode.apply(null, new Uint8Array(buffer));
+						return base64URLEncode(bufferToString);
+				})
+				.then(codeChallenge => {
+						window.location.href = "https://am.localhost/auth/"+domain+"/oauth/authorize?client_id=" + clientId + 
+															"&response_type=code&"+
+															"redirect_uri=https://am.localhost/client-jwt/"+
+															"&code_challenge="+codeChallenge+"&code_challenge_method=S256"
+				});
+		}
+
+		function onLoad() {
+			const params = new URL(document.URL).searchParams
+			const code = params.get('code')
+
+			if (code) {
+				// le paramètre code est présent, récupération des éléments mis en sessionStorage et demande du token
+				const code_verifier = sessionStorage.getItem('code_verifier');
+				const client_id = sessionStorage.getItem('client_id');
+				const client_secret = sessionStorage.getItem('client_secret');
+				const domain = sessionStorage.getItem('domain');
+
+				var xhr = new XMLHttpRequest();
+				xhr.open("POST", 'https://am.localhost/auth/'+domain+'/oauth/token', true);
+				xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+				xhr.onreadystatechange = function() { 
+						if (this.readyState === XMLHttpRequest.DONE) {
+							if (this.status === 200) {
+								let text = '<br>R&eacute;ponse : ' + this.responseText;
+								text += '<br><br><br> Utilisez le token  [' + JSON.parse(this.responseText)['access_token'] +'] dans vos requ&ecirc;tes'
+								document.getElementById('jwt').innerHTML += text;
+							} else {
+								alert("Erreur lors de la demande de token: " + this.responseText)
+							}
+						} 
+				}
+				xhr.setRequestHeader("Authorization", "Basic " + btoa(client_id+":"+client_secret))
+				xhr.send("grant_type=authorization_code&code=" + code +
+									"&redirect_uri=https://am.localhost/client-jwt/&client_id=" + client_id +
+									"&code_verifier=" + code_verifier);
+
+			}
+		}
+		</script>
+
+
+</body>
+</html> 

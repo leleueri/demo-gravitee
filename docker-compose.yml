@@ -1,0 +1,223 @@
+version: '3.5'
+
+networks:
+  frontend:
+    name: frontend
+  storage:
+    name: storage
+  middle:
+    name: mi
+
+services:
+  traefik:
+    image: traefik:v1.7
+    command: --api --docker
+    ports:
+      # only expose https to outside world
+      - "443:443"   # SSL
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "$PWD/traefik/config/traefik.toml:/etc/traefik/traefik.toml"
+      - "$PWD/traefik/certs/:/certs/"
+    labels:
+      - "traefik.enable=true"
+    depends_on:
+      - apim_gateway
+      - apim_console
+      - apim_portal
+      - apim_management
+      - am_gateway
+      - am_management
+      - am_console
+    networks:
+      frontend:
+        aliases:
+          - am.localhost
+          - apim.localhost
+
+  jwt-client:
+    image: nginx
+    volumes:
+      - ./client-jwt:/usr/share/nginx/html/client-jwt
+    labels:
+      - "traefik.backend=jwt-client"
+      - "traefik.frontend.rule=Host:am.localhost;PathPrefix:/client-jwt"
+      - "traefik.port=80"
+      - "traefik.docker.network=frontend"
+    networks:
+      - frontend
+
+  mongodb:
+    image: mongo:${MONGODB_VERSION:-4.2.12}
+    environment:
+      - MONGO_INITDB_DATABASE=gravitee
+    labels:
+      - "traefik.enable=false"
+    volumes:
+      - ./mongo/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+      - ./data/mongo:/data/db
+    networks:
+      - storage
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-7.8.1}
+    environment:
+      - http.host=0.0.0.0
+      - transport.host=0.0.0.0
+      - xpack.security.enabled=false
+      - xpack.monitoring.enabled=false
+      - cluster.name=elasticsearch
+      - discovery.type=single-node 
+    ulimits:
+      nofile: 65536
+    labels:
+      - "traefik.enable=false"
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - storage
+
+  apim_gateway:
+    image: graviteeio/apim-gateway:3.5
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_ratelimit_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_reporters_elasticsearch_endpoints_0=http://elasticsearch:9200
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.frontend.rule=Host:apim.localhost"
+      - "traefik.backend=graviteeio-apim-gateway"
+      - "traefik.port=8082"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - mongodb
+      - elasticsearch
+    networks:
+      - storage
+      - frontend
+      - middle
+
+  apim_console:
+    image: graviteeio/apim-management-ui:3.5
+    environment:
+      - MGMT_API_URL=https:\/\/apim.localhost\/api\/management\/organizations\/DEFAULT\/environments\/DEFAULT\/
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.frontend.redirect.regex=^https://apim.localhost/console$$"
+      - "traefik.frontend.redirect.replacement=https://apim.localhost/console/"
+      - "traefik.frontend.redirect.permanent=true"
+      - "traefik.port=8080"
+      # Warn: do not use PathPrefixStrip cause it not works well with redirect (https://github.com/containous/traefik/issues/1957#issuecomment-359369625)
+      - "traefik.frontend.rule=Host:apim.localhost;PathPrefix:/console;ReplacePathRegex: ^/console/(.*) /$$1"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - apim_management
+    networks:
+      - frontend
+
+  apim_portal:
+    image: graviteeio/apim-portal-ui:3.5
+    environment:
+      - PORTAL_BASE_HREF=/portal/
+      - PORTAL_API_URL=https:\/\/apim.localhost\/api\/portal\/environments\/DEFAULT
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.frontend.redirect.regex=^https://apim.localhost/portal$$"
+      - "traefik.frontend.redirect.replacement=https://apim.localhost/portal/"
+      - "traefik.frontend.redirect.permanent=true"
+      - "traefik.port=8080"
+      - "traefik.frontend.rule=Host:apim.localhost;PathPrefix:/portal;ReplacePathRegex: ^/portal/(.*) /$$1"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - apim_management
+    networks:
+      - frontend
+
+  apim_management:
+    image: graviteeio/apim-management-api:3.5
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_ratelimit_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_analytics_elasticsearch_endpoints_0=http://elasticsearch:9200
+      - gravitee_jwt_cookiepath=/api
+      - gravitee_jwt_cookiesecure=true
+      - gravitee_jwt_cookiedomain=apim.localhost
+      - gravitee_portal_entrypoint=https://apim.localhost
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.frontend.rule=Host:apim.localhost;PathPrefixStrip:/api"
+      - "traefik.backend=graviteeio-apim-management-api"
+      - "traefik.port=8083"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - mongodb
+      - elasticsearch
+    networks:
+      - storage
+      - frontend
+
+  am_gateway:
+    image: graviteeio/am-gateway:3.5
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee-am?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_oauth2_mongodb_uri=mongodb://mongodb:27017/gravitee-am?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.backend=graviteeio-am-gateway"
+      - "traefik.frontend.rule=Host:am.localhost;PathPrefixStrip:/auth"
+      - "traefik.port=8092"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - mongodb
+    networks:
+      - storage
+      - frontend
+
+  am_management:
+    image: graviteeio/am-management-api:3.5
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee-am?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_oauth2_mongodb_uri=mongodb://mongodb:27017/gravitee-am?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_jwt_cookiepath=/
+      - gravitee_jwt_cookiesecure=true
+      - gravitee_jwt_cookiedomain=am.localhost
+    volumes:
+      - "$PWD/gravitee/cacerts:/etc/ssl/certs/java/cacerts"
+    labels:
+      - "traefik.backend=graviteeio-am-managementapi"
+      - "traefik.frontend.rule=Host:am.localhost;PathPrefix:/management,/admin"
+      - "traefik.port=8093"
+      - "traefik.docker.network=frontend"
+    depends_on:
+      - mongodb
+    networks:
+      - storage
+      - frontend
+
+  am_console:
+    image: graviteeio/am-management-ui:3.5
+    environment:
+      - MGMT_API_URL=https:\/\/am.localhost${AM_MGT_API_BASE:-}
+      - MGMT_UI_URL=https:\/\/am.localhost
+    labels:
+      - "traefik.backend=graviteeio-am-managementui"
+      - "traefik.frontend.rule=Host:am.localhost"
+      - "traefik.docker.network=frontend"
+      - "traefik.port=8080"
+    depends_on:
+      - am_management
+    networks:
+      - frontend
+      
+  petstore:
+    image: swaggerapi/petstore:1.0.5
+    environment:
+      - SWAGGER_BASE_PATH=/store
+      - SWAGGER_URL=http://petstore:8080
+    networks:
+      - middle
