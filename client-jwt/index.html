@@ -47,7 +47,7 @@
 			const codeVerifier = base64URLEncode(bufferToString(array));
 			
 			// sauvegarde des éléments code_verifier, client credentials afin de permettre la demande de token
-			// dans une vrai application, les informations telle que le clietnSecret ne devraient pas être stockée
+			// dans une vrai application, les informations telle que le clientSecret ne devraient pas être stockées
 			// dans le browser, mais cote server (NodeJS ou WebApp Java)
 			// cette application d'exemple ne fait qu'illustrer le flow d'authentification
 			sessionStorage.setItem('code_verifier', codeVerifier);
